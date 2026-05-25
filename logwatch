@@ -152,7 +152,6 @@ Usage:
   logwatch json <file>           Parse JSON-structured logs
   logwatch sample <file> [n]     Random sample
 
-Donations: {BTC} (BTC)""")
         return
     
     cmd, path = sys.argv[1], sys.argv[2]
