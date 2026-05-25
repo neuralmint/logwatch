@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""
+logwatch — Log file viewer with filtering, stats, and tail.
+
+Usage:
+    logwatch tail <file> [n]       Last n lines (default 10)
+    logwatch grep <file> <pattern> Search for pattern
+    logwatch levels <file>         Count log levels (ERROR, WARN, INFO, DEBUG)
+    logwatch ip <file>             Extract and count IP addresses
+    logwatch hh <file>             Activity by hour of day
+    logwatch codes <file>          Extract and count HTTP status codes
+    logwatch json <file>           Parse structured JSON logs into a table
+    logwatch sample <file> [n]     Show n random lines
+"""
+
+import json
+import os
+import random
+import re
+import sys
+from collections import defaultdict
+from datetime import datetime
+
+BTC = "bc1q6ud0w3036ye2vfzkftwywarqswqu3jehs4nqe7"
+
+def read_lines(path):
+    with open(path, errors='replace') as f:
+        return f.readlines()
+
+def cmd_tail(path, n=10):
+    lines = read_lines(path)
+    for line in lines[-n:]:
+        print(line, end="")
+    print(f"\n--- {min(n, len(lines))} of {len(lines)} lines ---")
+
+def cmd_grep(path, pattern):
+    lines = read_lines(path)
+    count = 0
+    for i, line in enumerate(lines, 1):
+        if pattern.lower() in line.lower():
+            print(f"{i:>6}: {line}", end="")
+            count += 1
+    print(f"\n{count} matches")
+
+def cmd_levels(path):
+    lines = read_lines(path)
+    levels = defaultdict(int)
+    for line in lines:
+        for level in ["ERROR", "WARN", "INFO", "DEBUG", "TRACE", "FATAL"]:
+            if re.search(r'\b' + level + r'\b', line, re.IGNORECASE):
+                levels[level] += 1
+    total = sum(levels.values())
+    print(f"Total log lines: {len(lines)}\n")
+    for level in ["FATAL", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"]:
+        if levels[level]:
+            pct = levels[level] * 100 / max(total, 1)
+            bar = "█" * max(1, levels[level] * 30 // max(levels.values()))
+            print(f"  {level:<6} {levels[level]:>6}  ({pct:5.1f}%)  {bar}")
+
+def cmd_ip(path):
+    lines = read_lines(path)
+    ips = defaultdict(int)
+    for line in lines:
+        found = re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', line)
+        for ip in found:
+            ips[ip] += 1
+    if not ips:
+        print("No IP addresses found")
+        return
+    for ip, count in sorted(ips.items(), key=lambda x: -x[1])[:20]:
+        bar = "█" * max(1, count * 20 // max(ips.values()))
+        print(f"  {ip:<18} {count:>5}  {bar}")
+
+def cmd_hourly(path):
+    lines = read_lines(path)
+    hourly = defaultdict(int)
+    for line in lines:
+        # Match common timestamp formats: 2024-01-01 12:34:56, 12/Jan/2024:12:34:56
+        m = re.search(r'\d{4}[-/]\d{2}[-/]\d{2}[T ](\d{2})', line)
+        if m:
+            hourly[int(m.group(1))] += 1
+    if not hourly:
+        print("No timestamps found")
+        return
+    print("Activity by hour:\n")
+    for h in range(24):
+        bar = "█" * max(1, hourly[h] * 24 // max(hourly.values())) if hourly[h] else ""
+        print(f"  {h:02d}:00  {hourly[h]:>5}  {bar}")
+
+def cmd_codes(path):
+    lines = read_lines(path)
+    codes = defaultdict(int)
+    for line in lines:
+        found = re.findall(r'\b([45]\d\d)\b', line)
+        for code in found:
+            codes[code] += 1
+    if not codes:
+        print("No HTTP status codes found")
+        return
+    for code, count in sorted(codes.items()):
+        bar = "█" * max(1, count * 20 // max(codes.values()))
+        print(f"  {code:<6} {count:>5}  {bar}")
+
+def cmd_json(path):
+    lines = read_lines(path)
+    parsed = []
+    for line in lines:
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                parsed.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    if not parsed:
+        print("No JSON lines found")
+        return
+    print(f"Parsed {len(parsed)} JSON lines\n")
+    # Show as table with dynamic columns
+    all_keys = set()
+    for obj in parsed[:100]:
+        all_keys.update(obj.keys())
+    cols = sorted(all_keys)[:8]
+    widths = {c: len(c) for c in cols}
+    for obj in parsed[:20]:
+        for c in cols:
+            v = str(obj.get(c, ""))
+            widths[c] = max(widths[c], len(v))
+    print("  " + "  ".join(c.ljust(widths[c]) for c in cols))
+    print("  " + "-".join("-" * widths[c] for c in cols))
+    for obj in parsed[:20]:
+        print("  " + "  ".join(str(obj.get(c, "")).ljust(widths[c]) for c in cols))
+
+def cmd_sample(path, n=5):
+    lines = read_lines(path)
+    if len(lines) <= n:
+        for l in lines:
+            print(l, end="")
+        return
+    for line in random.sample(lines, n):
+        print(line, end="")
+
+def main():
+    if len(sys.argv) < 3:
+        print(f"""logwatch — Log file viewer
+
+Usage:
+  logwatch tail <file> [n]       Last n lines
+  logwatch grep <file> <pattern> Search
+  logwatch levels <file>         ERROR/WARN/INFO/DEBUG counts
+  logwatch ip <file>             Top IP addresses
+  logwatch hh <file>             Activity by hour
+  logwatch codes <file>          HTTP status codes
+  logwatch json <file>           Parse JSON-structured logs
+  logwatch sample <file> [n]     Random sample
+
+Donations: {BTC} (BTC)""")
+        return
+    
+    cmd, path = sys.argv[1], sys.argv[2]
+    if not os.path.isfile(path):
+        print(f"File not found: {path}")
+        return
+    
+    cmds = {
+        "tail": lambda: cmd_tail(path, int(sys.argv[3]) if len(sys.argv) > 3 else 10),
+        "grep": lambda: cmd_grep(path, sys.argv[3]) if len(sys.argv) > 3 else print("Need pattern"),
+        "levels": lambda: cmd_levels(path),
+        "ip": lambda: cmd_ip(path),
+        "hh": lambda: cmd_hourly(path),
+        "codes": lambda: cmd_codes(path),
+        "json": lambda: cmd_json(path),
+        "sample": lambda: cmd_sample(path, int(sys.argv[3]) if len(sys.argv) > 3 else 5),
+    }
+    
+    if cmd in cmds:
+        cmds[cmd]()
+    else:
+        print(f"Unknown: {cmd}")
+
+if __name__ == "__main__":
+    main()
